@@ -1,23 +1,30 @@
-app.post('/api/bot/enviar-regalo', async (req, res) => {
-  // 1. EL console.log DEBE IR ADENTRO de la función para evitar que el servidor colapse
-  console.log('📦 Recibida petición de regalo:', req.body);
-  
-  const { epicName, offerId, mensaje } = req.body;
-  
-  if (!epicName || !offerId) {
-    return res.status(400).json({ success: false, error: 'epicName y offerId son requeridos' });
-  }
+import { NextResponse } from 'next/server';
+import axios from 'axios';
 
-  const token = await ensureToken();
-  if (!token) {
-    return res.status(401).json({ success: false, error: 'No se pudo obtener token' });
-  }
+// IMPORTANTE: Asegúrate de tener aquí arriba tus funciones
+// ensureToken, getAccountIdByName, y la variable accountId.
 
+export async function POST(request) {
   try {
+    // En Next.js, así es como se lee lo que envía la página web
+    const body = await request.json();
+    console.log('📦 Recibida petición de regalo:', body);
+    
+    const { epicName, offerId, mensaje } = body;
+    
+    if (!epicName || !offerId) {
+      return NextResponse.json({ success: false, error: 'epicName y offerId son requeridos' }, { status: 400 });
+    }
+
+    const token = await ensureToken();
+    if (!token) {
+      return NextResponse.json({ success: false, error: 'No se pudo obtener token' }, { status: 401 });
+    }
+
     // 1. Obtener Account ID del destinatario
     const friendId = await getAccountIdByName(epicName);
     if (!friendId) {
-      return res.status(404).json({ success: false, error: `Usuario "${epicName}" no encontrado` });
+      return NextResponse.json({ success: false, error: `Usuario "${epicName}" no encontrado` }, { status: 404 });
     }
 
     // 2. Verificar que son amigos
@@ -34,13 +41,13 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
     }
 
     if (!areFriends) {
-      return res.status(400).json({
+      return NextResponse.json({
         success: false,
         error: `No eres amigo de ${epicName}. Debe aceptar la solicitud primero.`
-      });
+      }, { status: 400 });
     }
 
-    // 3. Obtener el precio REAL del artículo desde el catálogo
+    // 3. Obtener el precio REAL
     let itemPrice = 0;
     try {
       const catalogResponse = await axios({
@@ -50,12 +57,10 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
         timeout: 10000
       });
 
-      // Buscar el offerId en todas las secciones de la tienda
       for (const store of catalogResponse.data.storefronts) {
         if (store.catalogEntries) {
           const entry = store.catalogEntries.find(e => e.offerId === offerId);
           if (entry) {
-            // 2. NUEVA LÓGICA DE PRECIOS ADAPTADA A LA API ACTUAL DE EPIC GAMES
             if (entry.prices && entry.prices.length > 0) {
               itemPrice = entry.prices[0].finalPrice || entry.prices[0].regularPrice || 0;
             } else {
@@ -65,33 +70,27 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
           }
         }
       }
-
-      if (itemPrice === 0) {
-        console.warn(`⚠️ No se encontró precio para ${offerId}, se usará 0 (puede fallar)`);
-      } else {
-        console.log(`💰 Precio obtenido para ${offerId}: ${itemPrice} V-Bucks`);
-      }
+      console.log(`💰 Precio obtenido para ${offerId}: ${itemPrice} V-Bucks`);
     } catch (error) {
-      console.warn('⚠️ No se pudo obtener catálogo, se usará precio 0:', error.message);
+      console.warn('⚠️ Error en catálogo:', error.message);
     }
 
-    // 4. Enviar el regalo con el precio correcto
+    // 4. Enviar el regalo
     const payload = {
       offerId: offerId,
       purchaseQuantity: 1,
       currency: 'MtxCurrency',
       currencySubType: '',
-      expectedTotalPrice: itemPrice, // Usamos el precio real
+      expectedTotalPrice: itemPrice, 
       gameContext: '',
       receiverAccountIds: [friendId],
-      giftWrapTemplateId: 'GiftBox:gb_default', // 3. CAJA DE REGALO VÁLIDA
+      giftWrapTemplateId: 'GiftBox:gb_default', 
       personalMessage: mensaje || '¡Gracias por tu compra!'
     };
 
     console.log(`🎁 Enviando regalo a ${epicName} (${friendId})`);
-    console.log(`📦 Item: ${offerId}, Precio: ${itemPrice} V-Bucks`);
 
-    const response = await axios({
+    await axios({
       method: 'POST',
       url: `https://fortnite-public-service-prod11.ol.epicgames.com/fortnite/api/game/v2/profile/${accountId}/client/GiftCatalogEntry?profileId=common_core&rvn=-1`,
       headers: { 
@@ -103,24 +102,21 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
     });
 
     console.log(`✅ Regalo enviado exitosamente a ${epicName}`);
-    res.json({ success: true, message: `Regalo enviado a ${epicName}` });
+    return NextResponse.json({ success: true, message: `Regalo enviado a ${epicName}` });
 
   } catch (error) {
-    // Mostrar error detallado de Epic
     const epicError = error.response?.data;
-    console.error('❌ Error enviando regalo:');
-    console.error(JSON.stringify(epicError || error.message, null, 2));
+    console.error('❌ Error enviando regalo:', epicError || error.message);
 
-    // Si el error es por precio, dar un mensaje claro
     let userMessage = epicError?.errorMessage || error.message;
     if (epicError?.errorCode === 'errors.com.epicgames.modules.gifting.gift_offer_price_mismatch') {
-      userMessage = 'El precio del artículo no coincide. Asegúrate de enviar el precio correcto desde la web.';
+      userMessage = 'El precio del artículo no coincide.';
     }
 
-    res.status(500).json({
+    return NextResponse.json({
       success: false,
       error: userMessage,
       details: epicError || null
-    });
+    }, { status: 500 });
   }
-});
+}z
