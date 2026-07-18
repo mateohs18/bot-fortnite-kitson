@@ -40,7 +40,7 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
       currency: 'MtxCurrency',
       currencySubType: '',
       expectedTotalPrice: itemPrice,
-      gameContext: ''
+      gameContext: '',
       receiverAccountIds: [friendId],
       giftWrapTemplateId: 'GiftBox:gb_makeitrain',
       personalMessage: mensaje || '¡Gracias por tu compra!'
