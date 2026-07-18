@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typescript: {
-    // Esto ignora los errores de TypeScript durante el build
+    // Esto es lo que evita que Railway se detenga por errores de TS
     ignoreBuildErrors: true,
   },
 }
