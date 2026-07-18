@@ -1,5 +1,7 @@
-console.log('📦 Recibida petición de regalo:', req.body);
 app.post('/api/bot/enviar-regalo', async (req, res) => {
+  // ✅ 1. Movimos el console.log ADENTRO de la función para que no crashee
+  console.log('📦 Recibida petición de regalo:', req.body);
+  
   const { epicName, offerId, mensaje } = req.body;
   
   if (!epicName || !offerId) {
@@ -13,7 +15,7 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
 
   try {
     // 1. Obtener Account ID del destinatario
-    const friendId = await getAccountIdByName(epicName);
+    const friendId = await getAccountIdByName(epicName)
     if (!friendId) {
       return res.status(404).json({ success: false, error: `Usuario "${epicName}" no encontrado` });
     }
@@ -53,8 +55,12 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
         if (store.catalogEntries) {
           const entry = store.catalogEntries.find(e => e.offerId === offerId);
           if (entry) {
-            // Precio puede estar en regularPrice o devPrice
-            itemPrice = entry.regularPrice || entry.devPrice || 0;
+            // ✅ 2. LÓGICA DE PRECIO ACTUALIZADA A LA NUEVA API DE EPIC
+            if (entry.prices && entry.prices.length > 0) {
+              itemPrice = entry.prices[0].finalPrice || entry.prices[0].regularPrice || 0;
+            } else {
+              itemPrice = entry.regularPrice || entry.devPrice || 0;
+            }
             break;
           }
         }
@@ -78,7 +84,7 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
       expectedTotalPrice: itemPrice, // Usamos el precio real
       gameContext: '',
       receiverAccountIds: [friendId],
-      giftWrapTemplateId: 'GiftBox:gb_makeitrain',
+      giftWrapTemplateId: 'GiftBox:gb_default', // ✅ 3. CAJA DE REGALO VALIDA
       personalMessage: mensaje || '¡Gracias por tu compra!'
     };
 
