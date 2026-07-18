@@ -1,5 +1,5 @@
 app.post('/api/bot/enviar-regalo', async (req, res) => {
-  // ✅ 1. Movimos el console.log ADENTRO de la función para que no crashee
+  // 1. EL console.log DEBE IR ADENTRO de la función para evitar que el servidor colapse
   console.log('📦 Recibida petición de regalo:', req.body);
   
   const { epicName, offerId, mensaje } = req.body;
@@ -55,7 +55,7 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
         if (store.catalogEntries) {
           const entry = store.catalogEntries.find(e => e.offerId === offerId);
           if (entry) {
-            // ✅ 2. LÓGICA DE PRECIO ACTUALIZADA A LA NUEVA API DE EPIC
+            // 2. NUEVA LÓGICA DE PRECIOS ADAPTADA A LA API ACTUAL DE EPIC GAMES
             if (entry.prices && entry.prices.length > 0) {
               itemPrice = entry.prices[0].finalPrice || entry.prices[0].regularPrice || 0;
             } else {
@@ -84,7 +84,7 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
       expectedTotalPrice: itemPrice, // Usamos el precio real
       gameContext: '',
       receiverAccountIds: [friendId],
-      giftWrapTemplateId: 'GiftBox:gb_default', // ✅ 3. CAJA DE REGALO VALIDA
+      giftWrapTemplateId: 'GiftBox:gb_default', // 3. CAJA DE REGALO VÁLIDA
       personalMessage: mensaje || '¡Gracias por tu compra!'
     };
 
