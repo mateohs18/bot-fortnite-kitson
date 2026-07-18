@@ -15,7 +15,7 @@ app.post('/api/bot/enviar-regalo', async (req, res) => {
 
   try {
     // 1. Obtener Account ID del destinatario
-    const friendId = await getAccountIdByName(epicName)
+    const friendId = await getAccountIdByName(epicName);
     if (!friendId) {
       return res.status(404).json({ success: false, error: `Usuario "${epicName}" no encontrado` });
     }
