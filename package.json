@@ -2,11 +2,9 @@
   "name": "bot-fortnite-kitson",
   "version": "0.1.0",
   "dependencies": {
-    "next": "16.2.10",
-    "react": "...",
-    "react-dom": "...",
-    "typescript": "^7.0.2",
-    "@types/node": "^26.1.1",
-    "@types/react": "^19.2.17"
-  }
+  "next": "16.2.10",
+  "react": "^19.0.0",
+  "react-dom": "^19.0.0",
+  "axios": "latest"
 }
+  }
