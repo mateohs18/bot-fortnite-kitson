@@ -1,15 +1,13 @@
 {
-  "name": "kitson-kit",
-  "version": "0.1.0",
+  "name": "fortnite-bot",
+  "version": "1.0.0",
+  "main": "index.js",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+    "start": "node index.js"
   },
   "dependencies": {
-    "next": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "axios": "latest"
+    "axios": "^1.x.x",
+    "cors": "^2.x.x",
+    "express": "^4.x.x"
   }
 }
