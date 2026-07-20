@@ -20,7 +20,7 @@ const bots = [];
 // 1. CARGA DE BOTS (SIN FNBR.JS)
 // ==========================================================
 async function loadBots() {
-  const botsDir = path.join(__dirname, 'bots');
+  const botsDir = path.resolve(__dirname, 'bots');
   if (!fs.existsSync(botsDir)) {
     console.error('❌ No se encontró la carpeta "bots".');
     process.exit(1);
