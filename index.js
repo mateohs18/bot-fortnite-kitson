@@ -16,17 +16,10 @@ const bots = [];
 // ==========================================================
 // 0. SEGURIDAD: verificación del secreto compartido
 // ==========================================================
-// El sitio web (Kitson Kit) manda este mismo valor en el header
-// "x-bot-secret" en cada pedido (ver BOT_DELIVERY_SECRET en su .env).
-// Sin este chequeo, cualquiera que descubra la URL del bot podía pedirle
-// regalos gratis sin pasar por el checkout ni pagar nada.
 const BOT_SECRET = process.env.BOT_SECRET || '';
 
 function requiereSecreto(req, res, next) {
   if (!BOT_SECRET) {
-    // Si todavía no configuraste el secreto, dejamos pasar pero avisamos
-    // fuerte en la consola — así no te quedás sin entregas por sorpresa,
-    // pero tampoco te olvidás de configurarlo.
     console.warn('⚠️  BOT_SECRET no está configurado — el endpoint queda SIN protección.');
     return next();
   }
@@ -41,44 +34,85 @@ function requiereSecreto(req, res, next) {
 // ==========================================================
 // 1. CREDENCIALES DEL CLIENTE ANDROID DE FORTNITE
 // ==========================================================
-// Estas son las credenciales públicas del cliente oficial de Android que usa
-// la comunidad de fnbr.js para autenticar bots — no son un secreto tuyo, son
-// las mismas para cualquiera que use este método. Las centralizamos acá en
-// una sola constante para no tenerlas duplicadas en varios archivos.
 const ANDROID_BASIC_AUTH = 'M2Y2OWU1NmM3NjQ5NDkyYzhjYzI5ZjFhZjA4YThhMTI6YjUxZWU5Y2IxMjIzNGY1MGE2OWVmYTY3ZWY1MzgxMmU=';
 
 // ==========================================================
-// 2. CARGA DE BOTS Y FNBR.JS
+// 2. CARGA DE CREDENCIALES: carpetas locales O variables de entorno
+// ==========================================================
+// En tu compu (desarrollo): lee bots/<nombre>/deviceAuth.json de cada carpeta.
+// En Railway (producción): los deviceAuth.json NUNCA pasan por Git (están en
+// .gitignore a propósito, porque son equivalentes a la contraseña de la
+// cuenta), así que ahí se cargan desde variables de entorno en su lugar:
+//   DEVICE_AUTH_BOT1 = { "accountId": "...", "deviceId": "...", "secret": "..." }
+//   DEVICE_AUTH_BOT2 = { ... }
+//   DEVICE_AUTH_BOT3 = { ... }
+//   DEVICE_AUTH_BOT4 = { ... }
+// (el valor completo del JSON, pegado tal cual, en una sola línea o varias)
+function cargarCredenciales() {
+  const credenciales = [];
+
+  // --- Fuente 1: carpetas locales (bots/<nombre>/deviceAuth.json) ---
+  const botsDir = path.join(__dirname, 'bots');
+  if (fs.existsSync(botsDir)) {
+    const carpetas = fs.readdirSync(botsDir).filter((f) => fs.statSync(path.join(botsDir, f)).isDirectory());
+    for (const carpeta of carpetas) {
+      const authPath = path.join(botsDir, carpeta, 'deviceAuth.json');
+      if (fs.existsSync(authPath)) {
+        try {
+          const deviceAuth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+          credenciales.push({ nombre: carpeta, deviceAuth });
+        } catch (e) {
+          console.error(`❌ deviceAuth.json inválido en bots/${carpeta}:`, e.message);
+        }
+      }
+    }
+  }
+
+  // --- Fuente 2: variables de entorno DEVICE_AUTH_* (Railway) ---
+  // Solo se usan si no encontramos nada en la carpeta local, para no
+  // duplicar bots si algún día corrés con ambas fuentes presentes.
+  if (credenciales.length === 0) {
+    const variables = Object.keys(process.env).filter((k) => k.startsWith('DEVICE_AUTH_'));
+    for (const variable of variables) {
+      try {
+        const deviceAuth = JSON.parse(process.env[variable]);
+        const nombre = variable.replace('DEVICE_AUTH_', '').toLowerCase();
+        credenciales.push({ nombre, deviceAuth });
+      } catch (e) {
+        console.error(`❌ ${variable} no es un JSON válido:`, e.message);
+      }
+    }
+  }
+
+  return credenciales;
+}
+
+// ==========================================================
+// 3. CARGA DE BOTS Y FNBR.JS
 // ==========================================================
 async function loadBots() {
-  const botsDir = path.join(__dirname, 'bots');
-  if (!fs.existsSync(botsDir)) {
-    console.error('❌ No se encontró la carpeta "bots".');
+  const credenciales = cargarCredenciales();
+
+  if (credenciales.length === 0) {
+    console.error('❌ No se encontraron credenciales. Revisá la carpeta "bots" o las variables DEVICE_AUTH_*.');
     process.exit(1);
   }
 
-  const botFolders = fs.readdirSync(botsDir).filter(f => fs.statSync(path.join(botsDir, f)).isDirectory());
-  console.log(`\n🤖 Iniciando ${botFolders.length} bots con fnbr.js...`);
+  console.log(`\n🤖 Iniciando ${credenciales.length} bots con fnbr.js...`);
 
-  for (const folder of botFolders) {
-    const authPath = path.join(botsDir, folder, 'deviceAuth.json');
-    if (!fs.existsSync(authPath)) continue;
-
-    const deviceAuth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
-
+  for (const { nombre, deviceAuth } of credenciales) {
     const bot = new Client({
       auth: { deviceAuth },
       defaultStatus: 'Kitson Kit | Bot de Regalos',
       xmppKeepAliveInterval: 30
     });
 
-    bot.botName = folder;
+    bot.botName = nombre;
     bot.deviceAuth = deviceAuth;
     bot.vbucks = 0;
     bot.giftsSentToday = 0;
     bot.giftLimit = 5; // límite real que impone Epic Games por cuenta y por día
 
-    // CACHÉ DE TOKEN (Evita que Epic te banee por spam de peticiones)
     bot.accessToken = null;
     bot.tokenExpiry = null;
     bot.ensureManualToken = async function () {
@@ -112,7 +146,6 @@ async function loadBots() {
       console.log(`✅ [${bot.botName}] Conectado a Epic como: ${displayName}`);
     });
 
-    // MAGIA XMPP - Acepta amigos en 1 milisegundo
     bot.on('friend:request', (request) => {
       request.accept();
       console.log(`🤝 [${bot.botName}] Nueva amistad aceptada al instante: ${request.displayName || 'Desconocido'}`);
@@ -126,21 +159,13 @@ async function loadBots() {
     }
   }
 
-  // ==========================================================
-  // Refresco periódico de saldo y regalos enviados
-  // ==========================================================
-  // Antes, el saldo de pavos (vbucks) de cada bot solo se actualizaba
-  // cuando llegaba una petición — así que al elegir qué bot usar para un
-  // regalo, la info podía tener horas de desactualizada, y el bot podía
-  // fallar un pedido real por creer que tenía saldo cuando ya no lo tenía.
-  // Ahora se refresca solo cada 5 minutos en segundo plano.
   setInterval(() => {
     bots.forEach((bot) => updateBotStats(bot).catch(() => {}));
   }, 5 * 60 * 1000);
 }
 
 // ==========================================================
-// 3. FUNCIÓN DE ESCÁNER DE DATOS
+// 4. FUNCIÓN DE ESCÁNER DE DATOS
 // ==========================================================
 async function updateBotStats(bot) {
   try {
@@ -170,7 +195,6 @@ async function updateBotStats(bot) {
     const profile = response.data.profileChanges[0].profile;
     const items = profile.items || {};
 
-    // 💰 ESCÁNER DEFINITIVO DE PAVOS
     let totalPavos = 0;
     for (const key in items) {
       const item = items[key];
@@ -180,7 +204,6 @@ async function updateBotStats(bot) {
     }
     bot.vbucks = totalPavos;
 
-    // 🎁 ESCÁNER DE REGALOS EN 24 HORAS
     let regalosEn24h = 0;
     const stats = profile.stats?.attributes || {};
     if (stats.gift_history && Array.isArray(stats.gift_history.gifts)) {
@@ -199,7 +222,7 @@ async function updateBotStats(bot) {
 }
 
 // ==========================================================
-// 4. ENDPOINTS
+// 5. ENDPOINTS
 // ==========================================================
 app.get('/api/bots/status', requiereSecreto, async (req, res) => {
   for (const bot of bots) {
@@ -224,8 +247,6 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
   const { epicName, offerId, precio, mensaje } = req.body;
   if (!epicName || !offerId) return res.status(400).json({ error: 'Faltan datos' });
 
-  // Refrescamos el saldo de TODOS los bots antes de elegir, para no fallar
-  // un pedido real por estar usando datos de hace horas.
   await Promise.all(bots.map((b) => updateBotStats(b).catch(() => {})));
 
   const botInfo = bots.find(b => (b.giftLimit - b.giftsSentToday) > 0 && b.vbucks >= (precio || 0));
@@ -238,13 +259,11 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
     const token = await botInfo.ensureManualToken();
     const accountId = botInfo.deviceAuth.accountId;
 
-    // 1. Buscar ID del amigo
     const friendRes = await axios.get(`https://account-public-service-prod.ol.epicgames.com/account/api/public/account/displayName/${encodeURIComponent(epicName)}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const friendId = friendRes.data.id;
 
-    // 2. Enviar el regalo
     const payload = {
       offerId,
       purchaseQuantity: 1,
@@ -277,8 +296,6 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
     return res.status(400).json({ error: 'Falta el nombre de usuario de Epic.' });
   }
 
-  // Elegimos el bot con MENOS amigos actualmente (para repartir la carga
-  // entre cuentas si tenés varias, y no saturar siempre la misma).
   const botDisponible = bots
     .filter((b) => !!b.accessToken)
     .sort((a, b) => (a.friend?.list?.size || 0) - (b.friend?.list?.size || 0))[0];
@@ -288,8 +305,6 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
   }
 
   try {
-    // client.friend.add() envía la solicitud de amistad (o la acepta sola
-    // si el usuario ya nos la había mandado a nosotros primero).
     await botDisponible.friend.add(epicName.trim());
     console.log(`🤝 [${botDisponible.botName}] Solicitud de amistad enviada a ${epicName}`);
     return res.json({
@@ -298,8 +313,6 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
       message: `Te enviamos la solicitud de amistad desde ${botDisponible.realDisplayName || botDisponible.botName}. Aceptala dentro de Fortnite para continuar.`,
     });
   } catch (error) {
-    // fnbr.js lanza errores con nombres específicos según la causa exacta —
-    // los traducimos a mensajes que un cliente pueda entender.
     const tipo = error?.constructor?.name || '';
     let mensaje = 'No se pudo enviar la solicitud de amistad. Verificá el nombre de usuario e intentá de nuevo.';
 
@@ -320,12 +333,10 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
   }
 });
 
-// Chequeo simple de salud, útil para verificar que el servidor está vivo
-// sin exponer datos de los bots (no requiere secreto).
 app.get('/health', (req, res) => res.json({ ok: true, bots: bots.length }));
 
 // ==========================================================
-// 5. INICIAR SERVIDOR
+// 6. INICIAR SERVIDOR
 // ==========================================================
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
