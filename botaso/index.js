@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const dotenv = require('dotenv');
+const { Client } = require('fnbr'); // ⬅️ ¡ESTA LÍNEA ES OBLIGATORIA! Si falta, da el error ReferenceError.
 
 dotenv.config();
 
