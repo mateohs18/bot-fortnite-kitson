@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "npm install fnbr && node index.js"
-  },
+  "start": "npm install fnbr && node index.js"
+},
   "dependencies": {
     "axios": "^1.7.9",
     "cors": "^2.8.5",
