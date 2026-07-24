@@ -151,6 +151,32 @@ async function loadBots() {
       console.log(`🤝 [${bot.botName}] Nueva amistad aceptada al instante: ${request.displayName || 'Desconocido'}`);
     });
 
+    // Se dispara SIEMPRE que una amistad queda confirmada, sin importar
+    // quién mandó la solicitud primero (nosotros o el cliente). Le avisamos
+    // al sitio web para que notifique por Discord y reintente entregar
+    // cualquier pedido que estuviera esperando esta amistad.
+    bot.on('friend:added', async (friend) => {
+      console.log(`✅ [${bot.botName}] Amistad confirmada con: ${friend.displayName || friend.id}`);
+
+      const SITE_URL = process.env.SITE_URL || 'https://kitson-kit.store';
+      const SITE_CALLBACK_SECRET = process.env.SITE_CALLBACK_SECRET || '';
+
+      if (!SITE_CALLBACK_SECRET) {
+        console.warn('⚠️  SITE_CALLBACK_SECRET no configurado — no se avisa al sitio de esta amistad.');
+        return;
+      }
+
+      try {
+        await axios.post(
+          `${SITE_URL}/api/webhooks/amistad-aceptada`,
+          { epicName: friend.displayName, botName: bot.botName },
+          { headers: { 'x-callback-secret': SITE_CALLBACK_SECRET }, timeout: 15000 }
+        );
+      } catch (e) {
+        console.warn(`⚠️ No se pudo avisar al sitio sobre la amistad con ${friend.displayName}:`, e.message);
+      }
+    });
+
     try {
       await bot.login();
       bots.push(bot);
