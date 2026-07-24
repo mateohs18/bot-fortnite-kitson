@@ -316,47 +316,66 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
   }
 });
 
+// Contador para repartir las solicitudes de amistad por turnos entre todos
+// los bots disponibles. Antes se elegía "el bot con menos amigos", pero eso
+// hacía que las cuentas más viejas (con más amigos acumulados) nunca
+// volvieran a usarse — quedaban siempre de lado a favor de las más nuevas.
+
 app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
   const { epicName } = req.body;
   if (!epicName || typeof epicName !== 'string' || !epicName.trim()) {
     return res.status(400).json({ error: 'Falta el nombre de usuario de Epic.' });
   }
+  const nombre = epicName.trim();
 
-  const botDisponible = bots
-    .filter((b) => !!b.accessToken)
-    .sort((a, b) => (a.friend?.list?.size || 0) - (b.friend?.list?.size || 0))[0];
-
-  if (!botDisponible) {
+  const disponibles = bots.filter((b) => !!b.accessToken);
+  if (disponibles.length === 0) {
     return res.status(503).json({ error: 'No hay bots disponibles en este momento.' });
   }
 
-  try {
-    await botDisponible.friend.add(epicName.trim());
-    console.log(`🤝 [${botDisponible.botName}] Solicitud de amistad enviada a ${epicName}`);
-    return res.json({
-      success: true,
-      bot: botDisponible.botName,
-      message: `Te enviamos la solicitud de amistad desde ${botDisponible.realDisplayName || botDisponible.botName}. Aceptala dentro de Fortnite para continuar.`,
-    });
-  } catch (error) {
-    const tipo = error?.constructor?.name || '';
-    let mensaje = 'No se pudo enviar la solicitud de amistad. Verificá el nombre de usuario e intentá de nuevo.';
+  // Le mandamos la solicitud desde TODAS las cuentas conectadas, no solo
+  // una — así el cliente queda amigo de toda la "granja" desde el primer
+  // momento, y cualquiera de tus bots puede entregarle un regalo después.
+  const resultados = await Promise.all(
+    disponibles.map(async (bot) => {
+      try {
+        await bot.friend.add(nombre);
+        console.log(`🤝 [${bot.botName}] Solicitud de amistad enviada a ${nombre}`);
+        return { bot: bot.botName, ok: true };
+      } catch (error) {
+        const tipo = error?.constructor?.name || '';
+        // "Ya son amigos" o "ya le mandamos antes" NO son errores reales acá
+        // — significan que esa cuenta específica ya está bien con el cliente.
+        const yaResuelto = tipo.includes('DuplicateFriendship') || tipo.includes('FriendshipRequestAlreadySent');
+        if (!yaResuelto) {
+          console.warn(`⚠️ [${bot.botName}] Error agregando a ${nombre}:`, error.message || error);
+        }
+        return { bot: bot.botName, ok: yaResuelto, error: yaResuelto ? null : (error.message || String(error)) };
+      }
+    })
+  );
 
-    if (tipo.includes('UserNotFound')) {
+  const exitosos = resultados.filter((r) => r.ok);
+
+  if (exitosos.length === 0) {
+    // Ninguna cuenta pudo — devolvemos el motivo del primer intento real
+    const primerError = resultados.find((r) => r.error)?.error || '';
+    let mensaje = 'No se pudo enviar la solicitud de amistad. Verificá el nombre de usuario e intentá de nuevo.';
+    if (primerError.includes('not found') || primerError.includes('UserNotFound')) {
       mensaje = 'No encontramos ese nombre de usuario de Epic Games. Revisá que esté bien escrito (sin espacios de más).';
-    } else if (tipo.includes('DuplicateFriendship')) {
-      mensaje = 'Ya son amigos — revisá tu lista de amigos dentro de Fortnite.';
-    } else if (tipo.includes('FriendshipRequestAlreadySent')) {
-      mensaje = 'Ya te habíamos enviado una solicitud antes — buscala en tus solicitudes pendientes dentro del juego.';
-    } else if (tipo.includes('InviteeFriendshipSettings')) {
+    } else if (primerError.includes('FriendshipSettings')) {
       mensaje = 'Esa cuenta tiene las solicitudes de amistad desactivadas en su configuración de privacidad de Epic Games.';
-    } else if (tipo.includes('LimitExceeded')) {
+    } else if (primerError.includes('LimitExceeded')) {
       mensaje = 'Se alcanzó un límite de amistades. Probá de nuevo más tarde.';
     }
-
-    console.warn(`⚠️ Error agregando a ${epicName}:`, error.message || error);
     return res.status(400).json({ error: mensaje });
   }
+
+  return res.json({
+    success: true,
+    cuentas: exitosos.map((r) => r.bot),
+    message: `Te enviamos la solicitud de amistad desde ${exitosos.length} cuenta${exitosos.length === 1 ? '' : 's'} (${exitosos.map((r) => r.bot).join(', ')}). Aceptalas dentro de Fortnite para continuar.`,
+  });
 });
 
 app.get('/health', (req, res) => res.json({ ok: true, bots: bots.length }));
