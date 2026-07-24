@@ -298,7 +298,7 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
       expectedTotalPrice: precio || 0,
       gameContext: '',
       receiverAccountIds: [friendId],
-      giftWrapTemplateId: 'GiftBox:gb_makeitrain',
+      giftWrapTemplateId: 'GiftBox:gb_default', // 'gb_makeitrain' quedó discontinuado por Epic
       personalMessage: mensaje || '¡Disfruta tu compra en Kitson Kit!'
     };
 
