@@ -271,6 +271,55 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
   }
 });
 
+app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
+  const { epicName } = req.body;
+  if (!epicName || typeof epicName !== 'string' || !epicName.trim()) {
+    return res.status(400).json({ error: 'Falta el nombre de usuario de Epic.' });
+  }
+
+  // Elegimos el bot con MENOS amigos actualmente (para repartir la carga
+  // entre cuentas si tenés varias, y no saturar siempre la misma).
+  const botDisponible = bots
+    .filter((b) => !!b.accessToken)
+    .sort((a, b) => (a.friend?.list?.size || 0) - (b.friend?.list?.size || 0))[0];
+
+  if (!botDisponible) {
+    return res.status(503).json({ error: 'No hay bots disponibles en este momento.' });
+  }
+
+  try {
+    // client.friend.add() envía la solicitud de amistad (o la acepta sola
+    // si el usuario ya nos la había mandado a nosotros primero).
+    await botDisponible.friend.add(epicName.trim());
+    console.log(`🤝 [${botDisponible.botName}] Solicitud de amistad enviada a ${epicName}`);
+    return res.json({
+      success: true,
+      bot: botDisponible.botName,
+      message: `Te enviamos la solicitud de amistad desde ${botDisponible.realDisplayName || botDisponible.botName}. Aceptala dentro de Fortnite para continuar.`,
+    });
+  } catch (error) {
+    // fnbr.js lanza errores con nombres específicos según la causa exacta —
+    // los traducimos a mensajes que un cliente pueda entender.
+    const tipo = error?.constructor?.name || '';
+    let mensaje = 'No se pudo enviar la solicitud de amistad. Verificá el nombre de usuario e intentá de nuevo.';
+
+    if (tipo.includes('UserNotFound')) {
+      mensaje = 'No encontramos ese nombre de usuario de Epic Games. Revisá que esté bien escrito (sin espacios de más).';
+    } else if (tipo.includes('DuplicateFriendship')) {
+      mensaje = 'Ya son amigos — revisá tu lista de amigos dentro de Fortnite.';
+    } else if (tipo.includes('FriendshipRequestAlreadySent')) {
+      mensaje = 'Ya te habíamos enviado una solicitud antes — buscala en tus solicitudes pendientes dentro del juego.';
+    } else if (tipo.includes('InviteeFriendshipSettings')) {
+      mensaje = 'Esa cuenta tiene las solicitudes de amistad desactivadas en su configuración de privacidad de Epic Games.';
+    } else if (tipo.includes('LimitExceeded')) {
+      mensaje = 'Se alcanzó un límite de amistades. Probá de nuevo más tarde.';
+    }
+
+    console.warn(`⚠️ Error agregando a ${epicName}:`, error.message || error);
+    return res.status(400).json({ error: mensaje });
+  }
+});
+
 // Chequeo simple de salud, útil para verificar que el servidor está vivo
 // sin exponer datos de los bots (no requiere secreto).
 app.get('/health', (req, res) => res.json({ ok: true, bots: bots.length }));
