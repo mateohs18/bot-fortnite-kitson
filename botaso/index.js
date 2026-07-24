@@ -1,4 +1,3 @@
-// index.js - Servidor Multi-Bot Híbrido (FNBR.js + Axios)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
