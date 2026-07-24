@@ -1,16 +1,16 @@
+// index.js - Servidor Multi-Bot Híbrido (FNBR.js + Axios)
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const dotenv = require('dotenv');
-const { Client } = require('fnbr'); // ⬅️ ¡ESTA LÍNEA ES OBLIGATORIA! Si falta, da el error ReferenceError.
-
-dotenv.config();
+const { Client } = require('fnbr');
 
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
+
 const bots = [];
 
 // ==========================================================
