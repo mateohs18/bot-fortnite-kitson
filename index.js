@@ -72,7 +72,14 @@ function cargarCredenciales() {
   // Solo se usan si no encontramos nada en la carpeta local, para no
   // duplicar bots si algún día corrés con ambas fuentes presentes.
   if (credenciales.length === 0) {
-    const variables = Object.keys(process.env).filter((k) => k.startsWith('DEVICE_AUTH_'));
+    // .sort() es CRÍTICO acá: sin esto, el orden de las cuentas (y por lo
+    // tanto el orden de los botones en Discord) dependía de cómo Node.js
+    // enumera las variables de entorno — que NO necesariamente respeta
+    // BOT1, BOT2, BOT3 en ese orden. Con esto, siempre queda ordenado
+    // numéricamente, así el botón de la izquierda es siempre BOT1.
+    const variables = Object.keys(process.env)
+      .filter((k) => k.startsWith('DEVICE_AUTH_'))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     for (const variable of variables) {
       try {
         const deviceAuth = JSON.parse(process.env[variable]);
@@ -270,12 +277,30 @@ app.get('/api/bots/status', requiereSecreto, async (req, res) => {
 });
 
 app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
-  const { epicName, offerId, precio, mensaje } = req.body;
+  const { epicName, offerId, precio, mensaje, botName } = req.body;
   if (!epicName || !offerId) return res.status(400).json({ error: 'Faltan datos' });
 
   await Promise.all(bots.map((b) => updateBotStats(b).catch(() => {})));
 
-  const botInfo = bots.find(b => (b.giftLimit - b.giftsSentToday) > 0 && b.vbucks >= (precio || 0));
+  let botInfo;
+  if (botName) {
+    // El sitio (a través de Discord) pidió una cuenta específica — la
+    // usamos sí o sí, sin auto-elegir otra en su lugar.
+    botInfo = bots.find((b) => b.botName === botName);
+    if (!botInfo) {
+      return res.status(404).json({ error: `No existe ninguna cuenta conectada llamada "${botName}".` });
+    }
+    if ((botInfo.giftLimit - botInfo.giftsSentToday) <= 0) {
+      return res.status(400).json({ error: `La cuenta "${botName}" ya usó sus 5 regalos de hoy.` });
+    }
+    if (botInfo.vbucks < (precio || 0)) {
+      return res.status(400).json({ error: `La cuenta "${botName}" no tiene suficientes pavos (tiene ${botInfo.vbucks}, hacen falta ${precio}).` });
+    }
+  } else {
+    // Sin cuenta específica pedida: auto-elegimos la mejor disponible
+    // (se usa solo internamente, no desde el flujo normal de compras).
+    botInfo = bots.find(b => (b.giftLimit - b.giftsSentToday) > 0 && b.vbucks >= (precio || 0));
+  }
 
   if (!botInfo) {
     return res.status(503).json({ error: 'No hay bots disponibles con suficientes Pavos o Regalos.' });
@@ -311,8 +336,13 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
     res.json({ success: true, message: `Regalo enviado desde ${botInfo.botName}` });
 
   } catch (error) {
-    console.error(`❌ Error enviando regalo:`, error.response?.data?.errorMessage || error.message);
-    res.status(500).json({ error: 'Fallo al enviar el regalo. ¿Pasaron las 48 horas o el usuario no existe?' });
+    const motivoReal = error.response?.data?.errorMessage || error.message || 'Error desconocido';
+    console.error(`❌ Error enviando regalo:`, motivoReal);
+    // Antes acá siempre devolvíamos el mismo texto genérico ("¿pasaron las
+    // 48hs o el usuario no existe?"), tapando la causa real — ahora se
+    // manda el motivo exacto que da Epic Games, así se puede diagnosticar
+    // sin adivinar (offerId vencido, sin fondos, cuenta bloqueada, etc.).
+    res.status(500).json({ error: `Fallo al enviar el regalo: ${motivoReal}` });
   }
 });
 
@@ -341,21 +371,26 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
       try {
         await bot.friend.add(nombre);
         console.log(`🤝 [${bot.botName}] Solicitud de amistad enviada a ${nombre}`);
-        return { bot: bot.botName, ok: true };
+        return { bot: bot.botName, ok: true, yaEraAmigo: false };
       } catch (error) {
         const tipo = error?.constructor?.name || '';
-        // "Ya son amigos" o "ya le mandamos antes" NO son errores reales acá
-        // — significan que esa cuenta específica ya está bien con el cliente.
-        const yaResuelto = tipo.includes('DuplicateFriendship') || tipo.includes('FriendshipRequestAlreadySent');
+        // "Ya son amigos" NO es un error acá — significa que esa cuenta
+        // específica YA tenía la amistad de antes (aunque haya sido por
+        // fuera de este sistema). Lo distinguimos de "solicitud ya
+        // mandada" porque cambia si el reloj de 48hs debe arrancar ahora
+        // o si la amistad ya es lo bastante vieja como para regalar ya.
+        const yaEraAmigo = tipo.includes('DuplicateFriendship');
+        const yaResuelto = yaEraAmigo || tipo.includes('FriendshipRequestAlreadySent');
         if (!yaResuelto) {
           console.warn(`⚠️ [${bot.botName}] Error agregando a ${nombre}:`, error.message || error);
         }
-        return { bot: bot.botName, ok: yaResuelto, error: yaResuelto ? null : (error.message || String(error)) };
+        return { bot: bot.botName, ok: yaResuelto, yaEraAmigo, error: yaResuelto ? null : (error.message || String(error)) };
       }
     })
   );
 
   const exitosos = resultados.filter((r) => r.ok);
+  const algunaYaEraAmiga = resultados.some((r) => r.yaEraAmigo);
 
   if (exitosos.length === 0) {
     // Ninguna cuenta pudo — devolvemos el motivo del primer intento real
@@ -374,6 +409,10 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
   return res.json({
     success: true,
     cuentas: exitosos.map((r) => r.bot),
+    // El sitio usa esto para saber si tiene que arrancar el reloj de 48hs
+    // desde CERO (solicitud recién mandada) o si ya puede considerarla
+    // cumplida (alguna cuenta ya era amiga de antes).
+    algunaYaEraAmiga,
     message: `Te enviamos la solicitud de amistad desde ${exitosos.length} cuenta${exitosos.length === 1 ? '' : 's'} (${exitosos.map((r) => r.bot).join(', ')}). Aceptalas dentro de Fortnite para continuar.`,
   });
 });
