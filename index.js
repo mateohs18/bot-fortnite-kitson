@@ -39,19 +39,9 @@ const ANDROID_BASIC_AUTH = 'M2Y2OWU1NmM3NjQ5NDkyYzhjYzI5ZjFhZjA4YThhMTI6YjUxZWU5
 // ==========================================================
 // 2. CARGA DE CREDENCIALES: carpetas locales O variables de entorno
 // ==========================================================
-// En tu compu (desarrollo): lee bots/<nombre>/deviceAuth.json de cada carpeta.
-// En Railway (producción): los deviceAuth.json NUNCA pasan por Git (están en
-// .gitignore a propósito, porque son equivalentes a la contraseña de la
-// cuenta), así que ahí se cargan desde variables de entorno en su lugar:
-//   DEVICE_AUTH_BOT1 = { "accountId": "...", "deviceId": "...", "secret": "..." }
-//   DEVICE_AUTH_BOT2 = { ... }
-//   DEVICE_AUTH_BOT3 = { ... }
-//   DEVICE_AUTH_BOT4 = { ... }
-// (el valor completo del JSON, pegado tal cual, en una sola línea o varias)
 function cargarCredenciales() {
   const credenciales = [];
 
-  // --- Fuente 1: carpetas locales (bots/<nombre>/deviceAuth.json) ---
   const botsDir = path.join(__dirname, 'bots');
   if (fs.existsSync(botsDir)) {
     const carpetas = fs.readdirSync(botsDir).filter((f) => fs.statSync(path.join(botsDir, f)).isDirectory());
@@ -68,15 +58,7 @@ function cargarCredenciales() {
     }
   }
 
-  // --- Fuente 2: variables de entorno DEVICE_AUTH_* (Railway) ---
-  // Solo se usan si no encontramos nada en la carpeta local, para no
-  // duplicar bots si algún día corrés con ambas fuentes presentes.
   if (credenciales.length === 0) {
-    // .sort() es CRÍTICO acá: sin esto, el orden de las cuentas (y por lo
-    // tanto el orden de los botones en Discord) dependía de cómo Node.js
-    // enumera las variables de entorno — que NO necesariamente respeta
-    // BOT1, BOT2, BOT3 en ese orden. Con esto, siempre queda ordenado
-    // numéricamente, así el botón de la izquierda es siempre BOT1.
     const variables = Object.keys(process.env)
       .filter((k) => k.startsWith('DEVICE_AUTH_'))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
@@ -95,7 +77,88 @@ function cargarCredenciales() {
 }
 
 // ==========================================================
-// 3. CARGA DE BOTS Y FNBR.JS
+// 3. CREAR Y CONECTAR UNA CUENTA — reutilizable tanto al arrancar el
+//    servidor como para reconectar una cuenta puntual en caliente, sin
+//    reiniciar nada, cuando Epic le revoca el dispositivo autorizado.
+// ==========================================================
+function crearBot(nombre, deviceAuth) {
+  const bot = new Client({
+    auth: { deviceAuth },
+    defaultStatus: 'Kitson Kit | Bot de Regalos',
+    xmppKeepAliveInterval: 30
+  });
+
+  bot.botName = nombre;
+  bot.deviceAuth = deviceAuth;
+  bot.vbucks = 0;
+  bot.giftsSentToday = 0;
+  bot.giftLimit = 5;
+
+  bot.accessToken = null;
+  bot.tokenExpiry = null;
+  bot.ensureManualToken = async function () {
+    if (!this.accessToken || Date.now() >= this.tokenExpiry) {
+      try {
+        const params = new URLSearchParams({
+          grant_type: 'device_auth',
+          account_id: this.deviceAuth.accountId,
+          device_id: this.deviceAuth.deviceId,
+          secret: this.deviceAuth.secret
+        });
+        const response = await axios.post('https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token', params.toString(), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${ANDROID_BASIC_AUTH}`
+          }
+        });
+        this.accessToken = response.data.access_token;
+        this.tokenExpiry = Date.now() + (response.data.expires_in * 1000) - 60000;
+      } catch (e) {
+        console.error(`❌ [${this.botName}] Error OAuth token:`, e.message);
+        return null;
+      }
+    }
+    return this.accessToken;
+  };
+
+  bot.on('ready', async () => {
+    await updateBotStats(bot);
+    const displayName = bot.realDisplayName || bot.botName;
+    console.log(`✅ [${bot.botName}] Conectado a Epic como: ${displayName}`);
+  });
+
+  bot.on('friend:request', (request) => {
+    request.accept();
+    console.log(`🤝 [${bot.botName}] Nueva amistad aceptada al instante: ${request.displayName || 'Desconocido'}`);
+  });
+
+  bot.on('friend:added', async (friend) => {
+    console.log(`✅ [${bot.botName}] Amistad confirmada con: ${friend.displayName || friend.id}`);
+
+    const SITE_URL = process.env.SITE_URL || 'https://kitson-kit.store';
+    const SITE_CALLBACK_SECRET = process.env.SITE_CALLBACK_SECRET || '';
+
+    if (!SITE_CALLBACK_SECRET) {
+      console.warn('⚠️  SITE_CALLBACK_SECRET no configurado — no se avisa al sitio de esta amistad.');
+      return;
+    }
+
+    try {
+      await axios.post(
+        `${SITE_URL}/api/webhooks/amistad-aceptada`,
+        { epicName: friend.displayName, botName: bot.botName },
+        { headers: { 'x-callback-secret': SITE_CALLBACK_SECRET }, timeout: 15000 }
+      );
+    } catch (e) {
+      console.warn(`⚠️ No se pudo avisar al sitio sobre la amistad con ${friend.displayName}:`, e.message);
+    }
+  });
+
+  return bot;
+}
+
+// ==========================================================
+// 4. CARGA DE BOTS AL ARRANCAR
 // ==========================================================
 async function loadBots() {
   const credenciales = cargarCredenciales();
@@ -108,87 +171,12 @@ async function loadBots() {
   console.log(`\n🤖 Iniciando ${credenciales.length} bots con fnbr.js...`);
 
   for (const { nombre, deviceAuth } of credenciales) {
-    const bot = new Client({
-      auth: { deviceAuth },
-      defaultStatus: 'Kitson Kit | Bot de Regalos',
-      xmppKeepAliveInterval: 30
-    });
-
-    bot.botName = nombre;
-    bot.deviceAuth = deviceAuth;
-    bot.vbucks = 0;
-    bot.giftsSentToday = 0;
-    bot.giftLimit = 5; // límite real que impone Epic Games por cuenta y por día
-
-    bot.accessToken = null;
-    bot.tokenExpiry = null;
-    bot.ensureManualToken = async function () {
-      if (!this.accessToken || Date.now() >= this.tokenExpiry) {
-        try {
-          const params = new URLSearchParams({
-            grant_type: 'device_auth',
-            account_id: this.deviceAuth.accountId,
-            device_id: this.deviceAuth.deviceId,
-            secret: this.deviceAuth.secret
-          });
-          const response = await axios.post('https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token', params.toString(), {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-              'Authorization': `Basic ${ANDROID_BASIC_AUTH}`
-            }
-          });
-          this.accessToken = response.data.access_token;
-          this.tokenExpiry = Date.now() + (response.data.expires_in * 1000) - 60000;
-        } catch (e) {
-          console.error(`❌ [${this.botName}] Error OAuth token:`, e.message);
-          return null;
-        }
-      }
-      return this.accessToken;
-    };
-
-    bot.on('ready', async () => {
-      await updateBotStats(bot);
-      const displayName = bot.realDisplayName || bot.botName;
-      console.log(`✅ [${bot.botName}] Conectado a Epic como: ${displayName}`);
-    });
-
-    bot.on('friend:request', (request) => {
-      request.accept();
-      console.log(`🤝 [${bot.botName}] Nueva amistad aceptada al instante: ${request.displayName || 'Desconocido'}`);
-    });
-
-    // Se dispara SIEMPRE que una amistad queda confirmada, sin importar
-    // quién mandó la solicitud primero (nosotros o el cliente). Le avisamos
-    // al sitio web para que notifique por Discord y reintente entregar
-    // cualquier pedido que estuviera esperando esta amistad.
-    bot.on('friend:added', async (friend) => {
-      console.log(`✅ [${bot.botName}] Amistad confirmada con: ${friend.displayName || friend.id}`);
-
-      const SITE_URL = process.env.SITE_URL || 'https://kitson-kit.store';
-      const SITE_CALLBACK_SECRET = process.env.SITE_CALLBACK_SECRET || '';
-
-      if (!SITE_CALLBACK_SECRET) {
-        console.warn('⚠️  SITE_CALLBACK_SECRET no configurado — no se avisa al sitio de esta amistad.');
-        return;
-      }
-
-      try {
-        await axios.post(
-          `${SITE_URL}/api/webhooks/amistad-aceptada`,
-          { epicName: friend.displayName, botName: bot.botName },
-          { headers: { 'x-callback-secret': SITE_CALLBACK_SECRET }, timeout: 15000 }
-        );
-      } catch (e) {
-        console.warn(`⚠️ No se pudo avisar al sitio sobre la amistad con ${friend.displayName}:`, e.message);
-      }
-    });
-
     try {
+      const bot = crearBot(nombre, deviceAuth);
       await bot.login();
       bots.push(bot);
     } catch (err) {
-      console.error(`❌ [${bot.botName}] Error al iniciar sesión en fnbr:`, err.message);
+      console.error(`❌ [${nombre}] Error al iniciar sesión en fnbr:`, err.message);
     }
   }
 
@@ -198,7 +186,7 @@ async function loadBots() {
 }
 
 // ==========================================================
-// 4. FUNCIÓN DE ESCÁNER DE DATOS
+// 5. FUNCIÓN DE ESCÁNER DE DATOS
 // ==========================================================
 async function updateBotStats(bot) {
   try {
@@ -255,7 +243,7 @@ async function updateBotStats(bot) {
 }
 
 // ==========================================================
-// 5. ENDPOINTS
+// 6. ENDPOINTS
 // ==========================================================
 app.get('/api/bots/status', requiereSecreto, async (req, res) => {
   for (const bot of bots) {
@@ -284,8 +272,6 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
 
   let botInfo;
   if (botName) {
-    // El sitio (a través de Discord) pidió una cuenta específica — la
-    // usamos sí o sí, sin auto-elegir otra en su lugar.
     botInfo = bots.find((b) => b.botName === botName);
     if (!botInfo) {
       return res.status(404).json({ error: `No existe ninguna cuenta conectada llamada "${botName}".` });
@@ -297,8 +283,6 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
       return res.status(400).json({ error: `La cuenta "${botName}" no tiene suficientes pavos (tiene ${botInfo.vbucks}, hacen falta ${precio}).` });
     }
   } else {
-    // Sin cuenta específica pedida: auto-elegimos la mejor disponible
-    // (se usa solo internamente, no desde el flujo normal de compras).
     botInfo = bots.find(b => (b.giftLimit - b.giftsSentToday) > 0 && b.vbucks >= (precio || 0));
   }
 
@@ -323,7 +307,7 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
       expectedTotalPrice: precio || 0,
       gameContext: '',
       receiverAccountIds: [friendId],
-      giftWrapTemplateId: 'GiftBox:gb_default', // 'gb_makeitrain' quedó discontinuado por Epic
+      giftWrapTemplateId: 'GiftBox:gb_default',
       personalMessage: mensaje || '¡Disfruta tu compra en Kitson Kit!'
     };
 
@@ -338,18 +322,9 @@ app.post('/api/bot/enviar-regalo', requiereSecreto, async (req, res) => {
   } catch (error) {
     const motivoReal = error.response?.data?.errorMessage || error.message || 'Error desconocido';
     console.error(`❌ Error enviando regalo:`, motivoReal);
-    // Antes acá siempre devolvíamos el mismo texto genérico ("¿pasaron las
-    // 48hs o el usuario no existe?"), tapando la causa real — ahora se
-    // manda el motivo exacto que da Epic Games, así se puede diagnosticar
-    // sin adivinar (offerId vencido, sin fondos, cuenta bloqueada, etc.).
     res.status(500).json({ error: `Fallo al enviar el regalo: ${motivoReal}` });
   }
 });
-
-// Contador para repartir las solicitudes de amistad por turnos entre todos
-// los bots disponibles. Antes se elegía "el bot con menos amigos", pero eso
-// hacía que las cuentas más viejas (con más amigos acumulados) nunca
-// volvieran a usarse — quedaban siempre de lado a favor de las más nuevas.
 
 app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
   const { epicName } = req.body;
@@ -363,9 +338,6 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
     return res.status(503).json({ error: 'No hay bots disponibles en este momento.' });
   }
 
-  // Le mandamos la solicitud desde TODAS las cuentas conectadas, no solo
-  // una — así el cliente queda amigo de toda la "granja" desde el primer
-  // momento, y cualquiera de tus bots puede entregarle un regalo después.
   const resultados = await Promise.all(
     disponibles.map(async (bot) => {
       try {
@@ -374,11 +346,6 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
         return { bot: bot.botName, ok: true, yaEraAmigo: false };
       } catch (error) {
         const tipo = error?.constructor?.name || '';
-        // "Ya son amigos" NO es un error acá — significa que esa cuenta
-        // específica YA tenía la amistad de antes (aunque haya sido por
-        // fuera de este sistema). Lo distinguimos de "solicitud ya
-        // mandada" porque cambia si el reloj de 48hs debe arrancar ahora
-        // o si la amistad ya es lo bastante vieja como para regalar ya.
         const yaEraAmigo = tipo.includes('DuplicateFriendship');
         const yaResuelto = yaEraAmigo || tipo.includes('FriendshipRequestAlreadySent');
         if (!yaResuelto) {
@@ -393,7 +360,6 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
   const algunaYaEraAmiga = resultados.some((r) => r.yaEraAmigo);
 
   if (exitosos.length === 0) {
-    // Ninguna cuenta pudo — devolvemos el motivo del primer intento real
     const primerError = resultados.find((r) => r.error)?.error || '';
     let mensaje = 'No se pudo enviar la solicitud de amistad. Verificá el nombre de usuario e intentá de nuevo.';
     if (primerError.includes('not found') || primerError.includes('UserNotFound')) {
@@ -409,18 +375,63 @@ app.post('/api/bot/agregar-amigo', requiereSecreto, async (req, res) => {
   return res.json({
     success: true,
     cuentas: exitosos.map((r) => r.bot),
-    // El sitio usa esto para saber si tiene que arrancar el reloj de 48hs
-    // desde CERO (solicitud recién mandada) o si ya puede considerarla
-    // cumplida (alguna cuenta ya era amiga de antes).
     algunaYaEraAmiga,
     message: `Te enviamos la solicitud de amistad desde ${exitosos.length} cuenta${exitosos.length === 1 ? '' : 's'} (${exitosos.map((r) => r.bot).join(', ')}). Aceptalas dentro de Fortnite para continuar.`,
   });
 });
 
+// ==========================================================
+// 7. NUEVO — Actualizar credenciales de una cuenta en caliente, sin
+//    reiniciar el servidor ni esperar un redeploy. Para cuando Epic le
+//    revoca el dispositivo autorizado a una cuenta puntual.
+// ==========================================================
+app.post('/api/bot/actualizar-credenciales', requiereSecreto, async (req, res) => {
+  const { botName, deviceAuth } = req.body;
+
+  if (!botName || typeof botName !== 'string') {
+    return res.status(400).json({ error: 'Falta "botName" (ej: "bot1").' });
+  }
+  if (!deviceAuth || !deviceAuth.accountId || !deviceAuth.deviceId || !deviceAuth.secret) {
+    return res.status(400).json({ error: 'El deviceAuth no es válido — necesita accountId, deviceId y secret.' });
+  }
+
+  const nombre = botName.trim().toLowerCase();
+
+  try {
+    const nuevoBot = crearBot(nombre, deviceAuth);
+    await nuevoBot.login();
+    await updateBotStats(nuevoBot);
+
+    // Si ya había una cuenta con ese nombre (funcionando o rota), la
+    // sacamos y la reemplazamos — sin reiniciar nada.
+    const idxExistente = bots.findIndex((b) => b.botName === nombre);
+    if (idxExistente !== -1) {
+      const botViejo = bots[idxExistente];
+      bots.splice(idxExistente, 1);
+      if (typeof botViejo.logout === 'function') {
+        botViejo.logout().catch(() => {}); // mejor esfuerzo, no bloquea la respuesta
+      }
+    }
+
+    bots.push(nuevoBot);
+
+    const displayName = nuevoBot.realDisplayName || nombre;
+    console.log(`✅ [${nombre}] Credenciales actualizadas en caliente — conectado como: ${displayName}`);
+    res.json({
+      success: true,
+      message: `Credenciales de "${nombre}" actualizadas correctamente. Conectado como ${displayName}.`,
+      displayName,
+    });
+  } catch (err) {
+    console.error(`❌ [${nombre}] Error actualizando credenciales:`, err.message);
+    res.status(400).json({ error: `No se pudo conectar con las credenciales nuevas: ${err.message}` });
+  }
+});
+
 app.get('/health', (req, res) => res.json({ ok: true, bots: bots.length }));
 
 // ==========================================================
-// 6. INICIAR SERVIDOR
+// 8. INICIAR SERVIDOR
 // ==========================================================
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
